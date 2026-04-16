@@ -45,25 +45,49 @@ export default async function handler(req, res) {
         createdTime: file.createdTime
       });
 
-      // Get parent folder info to determine project type
-      let projectType = 'Broll';
-      if (file.parents && file.parents.length > 0) {
-        try {
-          const parentInfo = await drive.files.get({
-            fileId: file.parents[0],
-            fields: 'name'
-          });
-          const folderName = parentInfo.data.name.toLowerCase();
-          console.log('Parent folder name:', folderName);
-          
-          if (folderName.includes('shorts')) projectType = 'Shorts';
-          else if (folderName.includes('midroll')) projectType = 'Midrolls';
-          else if (folderName.includes('member')) projectType = 'Members';
-          else if (folderName.includes('active')) projectType = 'Active Videos';
-        } catch (e) {
-          console.log('Could not get parent folder info');
-        }
+      // Replace the folder detection section with this recursive version:
+let projectType = 'Broll';
+
+async function findProjectTypeInHierarchy(folderId, depth = 0) {
+  // Prevent infinite loops, max 5 levels deep
+  if (depth > 5) return 'Broll';
+  
+  try {
+    const folderInfo = await drive.files.get({
+      fileId: folderId,
+      fields: 'name,parents'
+    });
+    
+    const folderName = folderInfo.data.name.toLowerCase();
+    console.log(`Level ${depth} folder:`, folderName);
+    
+    // Check if this folder name matches our project types
+    if (folderName.includes('shorts')) return 'Shorts';
+    if (folderName.includes('midroll')) return 'Midrolls';
+    if (folderName.includes('member')) return 'Members';
+    if (folderName.includes('active')) return 'Active Videos';
+    
+    // If no match and has parent, check parent folder
+    if (folderInfo.data.parents && folderInfo.data.parents.length > 0) {
+      // Don't go beyond the "Switch and Click Videos" folder
+      if (folderInfo.data.parents[0] === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
+        return 'Broll';
       }
+      return await findProjectTypeInHierarchy(folderInfo.data.parents[0], depth + 1);
+    }
+    
+    return 'Broll';
+  } catch (e) {
+    console.log(`Error checking folder at depth ${depth}:`, e.message);
+    return 'Broll';
+  }
+}
+
+
+      
+if (file.parents && file.parents.length > 0) {
+  projectType = await findProjectTypeInHierarchy(file.parents[0]);
+}
 
       // Check if already processed
       const existing = await notion.databases.query({
