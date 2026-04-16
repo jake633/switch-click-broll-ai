@@ -1,66 +1,41 @@
 import { google } from 'googleapis';
 import { Client } from '@notionhq/client';
-import Anthropic from '@anthropic-ai/sdk';
 
 export default async function handler(req, res) {
+  console.log('=== WEBHOOK START ===');
+  
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
     const resourceState = req.headers['x-goog-resource-state'];
+    console.log('Resource state:', resourceState);
+    
     if (resourceState === 'sync') {
+      console.log('Sync notification, ignoring');
       return res.status(200).json({ message: 'Sync ignored' });
     }
 
-    console.log('🎬 Processing Drive notification...');
+    console.log('Processing Drive notification...');
 
-    // Add delay to batch notifications
+    // Add delay
     await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('Delay completed');
 
-    // Set up APIs
+    // Set up Google Drive API
+    console.log('Setting up Drive API...');
     const auth = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET
     );
     auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
     const drive = google.drive({ version: 'v3', auth });
-    const notion = new Client({ auth: process.env.NOTION_TOKEN });
+    console.log('Drive API ready');
 
-    // MOVE THE FUNCTION OUTSIDE THE LOOP
-    async function findProjectTypeInHierarchy(folderId, depth = 0) {
-      if (depth > 5) return 'Broll';
-      
-      try {
-        const folderInfo = await drive.files.get({
-          fileId: folderId,
-          fields: 'name,parents'
-        });
-        
-        const folderName = folderInfo.data.name.toLowerCase();
-        console.log(`Level ${depth} folder:`, folderName);
-        
-        if (folderName.includes('shorts')) return 'Shorts';
-        if (folderName.includes('midroll')) return 'Midrolls';
-        if (folderName.includes('member')) return 'Members';
-        if (folderName.includes('active')) return 'Active Videos';
-        
-        if (folderInfo.data.parents && folderInfo.data.parents.length > 0) {
-          if (folderInfo.data.parents[0] === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
-            return 'Broll';
-          }
-          return await findProjectTypeInHierarchy(folderInfo.data.parents[0], depth + 1);
-        }
-        
-        return 'Broll';
-      } catch (e) {
-        console.log(`Error checking folder at depth ${depth}:`, e.message);
-        return 'Broll';
-      }
-    }
-
-    // Get files from last 5 minutes
+    // Get recent files
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    console.log('Searching for files newer than:', fiveMinutesAgo);
     
     const response = await drive.files.list({
       q: `'1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H' in parents and mimeType contains 'video' and createdTime > '${fiveMinutesAgo}'`,
@@ -69,25 +44,31 @@ export default async function handler(req, res) {
       fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
     });
 
-    console.log(`Found ${response.data.files.length} recent files`);
+    console.log(`Found ${response.data.files.length} recent video files`);
+    
+    if (response.data.files.length === 0) {
+      console.log('No recent files found');
+      return res.status(200).json({ message: 'No recent files' });
+    }
 
+    // Process each file
     for (const file of response.data.files) {
+      console.log(`Checking file: ${file.name}`);
+      
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
-      if (fileSizeGB > 3) continue;
-
-      console.log('File details:', {
-        name: file.name,
-        parents: file.parents,
-        createdTime: file.createdTime
-      });
-
-      // Use the function here
-      let projectType = 'Broll';
-      if (file.parents && file.parents.length > 0) {
-        projectType = await findProjectTypeInHierarchy(file.parents[0]);
+      console.log(`File size: ${fileSizeGB.toFixed(2)}GB`);
+      
+      if (fileSizeGB > 3) {
+        console.log(`Skipping large file: ${file.name}`);
+        continue;
       }
 
-      // Check if already processed
+      // Set up Notion
+      console.log('Setting up Notion API...');
+      const notion = new Client({ auth: process.env.NOTION_TOKEN });
+
+      // Check for duplicates
+      console.log('Checking for existing entry...');
       const existing = await notion.databases.query({
         database_id: process.env.NOTION_DATABASE_ID,
         filter: {
@@ -101,9 +82,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      console.log(`Processing: ${file.name} as ${projectType}`);
+      console.log(`Creating Notion entry for: ${file.name}`);
 
-      // Simple filename-based analysis
+      // Simple analysis
       let analysis = {
         people: ['Nobody'],
         objects: ['Product'],
@@ -114,21 +95,13 @@ export default async function handler(req, res) {
         best_for: ['B-roll']
       };
 
-      const fileName = file.name.toLowerCase();
-      if (fileName.includes('keyboard') || fileName.includes('typing')) {
-        analysis.objects = ['Keyboard'];
-        analysis.action = ['Typing'];
-        analysis.best_for = ['Typing-montage'];
-        analysis.description = 'Keyboard typing footage';
-      }
-
-      // Create Notion entry
+      // Create basic entry
       await notion.pages.create({
         parent: { database_id: process.env.NOTION_DATABASE_ID },
         properties: {
           'Title': { title: [{ text: { content: file.name } }] },
           'Drive Link': { url: file.webViewLink },
-          'Project Type': { select: { name: projectType } },
+          'Project Type': { select: { name: 'Broll' } },
           'People': { multi_select: analysis.people.map(p => ({ name: p })) },
           'Objects': { multi_select: analysis.objects.map(o => ({ name: o })) },
           'Shot Type': { select: { name: analysis.shot_type } },
@@ -141,13 +114,15 @@ export default async function handler(req, res) {
         }
       });
 
-      console.log(`✅ Created entry: ${file.name} in ${projectType}`);
+      console.log(`✅ Successfully created entry for: ${file.name}`);
     }
-    
+
+    console.log('=== WEBHOOK SUCCESS ===');
     res.status(200).json({ success: true });
     
   } catch (error) {
-    console.error('❌ Webhook error:', error);
+    console.error('=== WEBHOOK ERROR ===', error.message);
+    console.error('Stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 }
