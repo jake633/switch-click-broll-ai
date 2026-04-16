@@ -24,7 +24,6 @@ export default async function handler(req, res) {
     auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
     const drive = google.drive({ version: 'v3', auth });
     const notion = new Client({ auth: process.env.NOTION_TOKEN });
-    const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
     // Get files from last 5 minutes
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -33,30 +32,38 @@ export default async function handler(req, res) {
       q: `'1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H' in parents and mimeType contains 'video' and createdTime > '${fiveMinutesAgo}'`,
       orderBy: 'createdTime desc',
       pageSize: 3,
-      fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)' // ← Update this line
+      fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
     });
 
     for (const file of response.data.files) {
-  const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
-  if (fileSizeGB > 3) continue;
-
-  // ADD THE NEW FOLDER DETECTION CODE HERE
-  console.log('File details:', {
-    name: file.name,
-    parents: file.parents,
-    createdTime: file.createdTime
-  });
-
-  // Get parent folder info to determine project type
-  let projectType = 'Other';
-  // ... rest of folder detection code
-
-  // Then continue with existing duplicate check
-  const existing = await notion.databases.query({
-    // ... existing code
-    for (const file of response.data.files) {
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
       if (fileSizeGB > 3) continue;
+
+      console.log('File details:', {
+        name: file.name,
+        parents: file.parents,
+        createdTime: file.createdTime
+      });
+
+      // Get parent folder info to determine project type
+      let projectType = 'Broll';
+      if (file.parents && file.parents.length > 0) {
+        try {
+          const parentInfo = await drive.files.get({
+            fileId: file.parents[0],
+            fields: 'name'
+          });
+          const folderName = parentInfo.data.name.toLowerCase();
+          console.log('Parent folder name:', folderName);
+          
+          if (folderName.includes('shorts')) projectType = 'Shorts';
+          else if (folderName.includes('midroll')) projectType = 'Midrolls';
+          else if (folderName.includes('member')) projectType = 'Members';
+          else if (folderName.includes('active')) projectType = 'Active Videos';
+        } catch (e) {
+          console.log('Could not get parent folder info');
+        }
+      }
 
       // Check if already processed
       const existing = await notion.databases.query({
@@ -74,7 +81,7 @@ export default async function handler(req, res) {
 
       console.log(`Processing: ${file.name}`);
 
-      // Simple filename-based analysis for now
+      // Simple filename-based analysis
       let analysis = {
         people: ['Nobody'],
         objects: ['Product'],
@@ -112,7 +119,7 @@ export default async function handler(req, res) {
         }
       });
 
-      console.log(`✅ Created entry: ${file.name}`);
+      console.log(`✅ Created entry: ${file.name} in ${projectType}`);
     }
     
     res.status(200).json({ success: true });
