@@ -14,6 +14,41 @@ export default async function handler(req, res) {
     const drive = google.drive({ version: 'v3', auth });
     const notion = new Client({ auth: process.env.NOTION_TOKEN });
 
+    // Function to build full folder path
+    async function buildFolderPath(folderId, path = []) {
+      if (!folderId || folderId === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
+        return path.reverse().join(' → ');
+      }
+
+      try {
+        const folderInfo = await drive.files.get({
+          fileId: folderId,
+          fields: 'name,parents'
+        });
+
+        path.push(folderInfo.data.name);
+
+        if (folderInfo.data.parents && folderInfo.data.parents.length > 0) {
+          return await buildFolderPath(folderInfo.data.parents[0], path);
+        }
+
+        return path.reverse().join(' → ');
+      } catch (e) {
+        console.log('Error building path:', e.message);
+        return path.reverse().join(' → ');
+      }
+    }
+
+    // Function to determine project type from path
+    function getProjectTypeFromPath(folderPath) {
+      const pathLower = folderPath.toLowerCase();
+      if (pathLower.includes('shorts')) return 'Shorts';
+      if (pathLower.includes('midroll')) return 'Midrolls';
+      if (pathLower.includes('member')) return 'Members';
+      if (pathLower.includes('active')) return 'Active Videos';
+      return 'Broll';
+    }
+
     // Get files from last 30 minutes
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     console.log('Searching for files newer than:', thirtyMinutesAgo);
@@ -62,6 +97,16 @@ export default async function handler(req, res) {
 
       console.log(`Processing: ${file.name}`);
 
+      // Build folder path
+      let folderPath = 'Root';
+      if (file.parents && file.parents.length > 0) {
+        folderPath = await buildFolderPath(file.parents[0]);
+        console.log(`Folder path: ${folderPath}`);
+      }
+
+      // Determine project type
+      const projectType = getProjectTypeFromPath(folderPath);
+
       // Simple analysis
       let analysis = {
         people: ['Nobody'],
@@ -87,20 +132,20 @@ export default async function handler(req, res) {
         properties: {
           'Title': { title: [{ text: { content: file.name } }] },
           'Drive Link': { url: file.webViewLink },
-          'Project Type': { select: { name: 'Broll' } },
+          'Project Type': { select: { name: projectType } },
           'People': { multi_select: analysis.people.map(p => ({ name: p })) },
           'Objects': { multi_select: analysis.objects.map(o => ({ name: o })) },
           'Shot Type': { select: { name: analysis.shot_type } },
           'Action': { multi_select: analysis.action.map(a => ({ name: a })) },
           'Location': { select: { name: analysis.location } },
-          'Description': { rich_text: [{ text: { content: analysis.description } }] },
+          'Description': { rich_text: [{ text: { content: analysis.description + ` (${folderPath})` } }] },
           'Best For': { multi_select: analysis.best_for.map(b => ({ name: b })) },
           'File Size (MB)': { number: Math.round(parseInt(file.size) / (1024 * 1024)) },
           'Processing Date': { date: { start: new Date().toISOString().split('T')[0] } }
         }
       });
 
-      console.log(`✅ Created: ${file.name}`);
+      console.log(`✅ Created: ${file.name} in ${folderPath}`);
       processed++;
     }
 
