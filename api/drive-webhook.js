@@ -99,7 +99,7 @@ export default async function handler(req, res) {
         properties: {
           'Title': { title: [{ text: { content: file.name } }] },
           'Drive Link': { url: file.webViewLink },
-          'Project Type': { select: { name: 'Broll' } },
+          'Project Type': { select: { name: projectType } },
           'People': { multi_select: analysis.people.map(p => ({ name: p })) },
           'Objects': { multi_select: analysis.objects.map(o => ({ name: o })) },
           'Shot Type': { select: { name: analysis.shot_type } },
