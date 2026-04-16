@@ -4,22 +4,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Make a POST request to our setup endpoint
-    const baseUrl = req.headers.host?.includes('localhost') 
-      ? 'http://localhost:3000' 
-      : 'https://switch-click-broll-ai.vercel.app';
-      
-    const response = await fetch(`${baseUrl}/api/setup-drive-webhook`, {
+    const response = await fetch('https://switch-click-broll-ai.vercel.app/api/setup-drive-webhook', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
     
-    const data = await response.json();
+    const responseText = await response.text(); // Get raw text instead of JSON
     
     res.status(200).json({ 
       success: response.ok, 
       status: response.status,
-      setupResponse: data 
+      headers: Object.fromEntries(response.headers),
+      rawResponse: responseText.substring(0, 500) // First 500 chars
     });
     
   } catch (error) {
