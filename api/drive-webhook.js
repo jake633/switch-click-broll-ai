@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // Log every single request
   console.log('=== WEBHOOK RECEIVED ===', {
     method: req.method,
     timestamp: new Date().toISOString(),
@@ -8,22 +7,39 @@ export default async function handler(req, res) {
   });
 
   if (req.method !== 'POST') {
-    console.log('Non-POST request, rejecting');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    console.log('Processing webhook...');
+    // Google Drive sends direct notifications, not Pub/Sub format
+    const channelId = req.headers['x-goog-channel-id'];
+    const resourceState = req.headers['x-goog-resource-state'];
+    const resourceId = req.headers['x-goog-resource-id'];
     
-    // For now, just log and respond OK
+    console.log('Drive notification:', {
+      channelId,
+      resourceState,
+      resourceId
+    });
+
+    if (resourceState === 'sync') {
+      console.log('Sync notification, ignoring');
+      return res.status(200).json({ message: 'Sync ignored' });
+    }
+
+    console.log('File change detected, processing...');
+    
+    // TODO: Add file processing logic here
+    
     res.status(200).json({ 
       success: true, 
-      message: 'Webhook received and logged',
-      timestamp: new Date().toISOString()
+      message: 'Webhook processed successfully',
+      resourceState,
+      channelId
     });
     
   } catch (error) {
     console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: error.message });
   }
 }
