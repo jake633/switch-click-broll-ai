@@ -33,9 +33,27 @@ export default async function handler(req, res) {
       q: `'1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H' in parents and mimeType contains 'video' and createdTime > '${fiveMinutesAgo}'`,
       orderBy: 'createdTime desc',
       pageSize: 3,
-      fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
+      fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)' // ← Update this line
     });
 
+    for (const file of response.data.files) {
+  const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
+  if (fileSizeGB > 3) continue;
+
+  // ADD THE NEW FOLDER DETECTION CODE HERE
+  console.log('File details:', {
+    name: file.name,
+    parents: file.parents,
+    createdTime: file.createdTime
+  });
+
+  // Get parent folder info to determine project type
+  let projectType = 'Other';
+  // ... rest of folder detection code
+
+  // Then continue with existing duplicate check
+  const existing = await notion.databases.query({
+    // ... existing code
     for (const file of response.data.files) {
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
       if (fileSizeGB > 3) continue;
