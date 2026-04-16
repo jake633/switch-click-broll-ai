@@ -1,6 +1,7 @@
 {
   "name": "switch-click-broll-ai",
   "version": "1.0.0",
+  "type": "module",
   "dependencies": {
     "@google-cloud/pubsub": "^4.0.0",
     "googleapis": "^126.0.0",
