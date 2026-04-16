@@ -13,6 +13,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ message: 'Sync ignored' });
     }
 
+    console.log('🎬 Processing Drive notification...');
+
     // Add delay to batch notifications
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -25,6 +27,38 @@ export default async function handler(req, res) {
     const drive = google.drive({ version: 'v3', auth });
     const notion = new Client({ auth: process.env.NOTION_TOKEN });
 
+    // MOVE THE FUNCTION OUTSIDE THE LOOP
+    async function findProjectTypeInHierarchy(folderId, depth = 0) {
+      if (depth > 5) return 'Broll';
+      
+      try {
+        const folderInfo = await drive.files.get({
+          fileId: folderId,
+          fields: 'name,parents'
+        });
+        
+        const folderName = folderInfo.data.name.toLowerCase();
+        console.log(`Level ${depth} folder:`, folderName);
+        
+        if (folderName.includes('shorts')) return 'Shorts';
+        if (folderName.includes('midroll')) return 'Midrolls';
+        if (folderName.includes('member')) return 'Members';
+        if (folderName.includes('active')) return 'Active Videos';
+        
+        if (folderInfo.data.parents && folderInfo.data.parents.length > 0) {
+          if (folderInfo.data.parents[0] === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
+            return 'Broll';
+          }
+          return await findProjectTypeInHierarchy(folderInfo.data.parents[0], depth + 1);
+        }
+        
+        return 'Broll';
+      } catch (e) {
+        console.log(`Error checking folder at depth ${depth}:`, e.message);
+        return 'Broll';
+      }
+    }
+
     // Get files from last 5 minutes
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     
@@ -34,6 +68,8 @@ export default async function handler(req, res) {
       pageSize: 3,
       fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
     });
+
+    console.log(`Found ${response.data.files.length} recent files`);
 
     for (const file of response.data.files) {
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
@@ -45,49 +81,11 @@ export default async function handler(req, res) {
         createdTime: file.createdTime
       });
 
-      // Replace the folder detection section with this recursive version:
-let projectType = 'Broll';
-
-async function findProjectTypeInHierarchy(folderId, depth = 0) {
-  // Prevent infinite loops, max 5 levels deep
-  if (depth > 5) return 'Broll';
-  
-  try {
-    const folderInfo = await drive.files.get({
-      fileId: folderId,
-      fields: 'name,parents'
-    });
-    
-    const folderName = folderInfo.data.name.toLowerCase();
-    console.log(`Level ${depth} folder:`, folderName);
-    
-    // Check if this folder name matches our project types
-    if (folderName.includes('shorts')) return 'Shorts';
-    if (folderName.includes('midroll')) return 'Midrolls';
-    if (folderName.includes('member')) return 'Members';
-    if (folderName.includes('active')) return 'Active Videos';
-    
-    // If no match and has parent, check parent folder
-    if (folderInfo.data.parents && folderInfo.data.parents.length > 0) {
-      // Don't go beyond the "Switch and Click Videos" folder
-      if (folderInfo.data.parents[0] === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
-        return 'Broll';
+      // Use the function here
+      let projectType = 'Broll';
+      if (file.parents && file.parents.length > 0) {
+        projectType = await findProjectTypeInHierarchy(file.parents[0]);
       }
-      return await findProjectTypeInHierarchy(folderInfo.data.parents[0], depth + 1);
-    }
-    
-    return 'Broll';
-  } catch (e) {
-    console.log(`Error checking folder at depth ${depth}:`, e.message);
-    return 'Broll';
-  }
-}
-
-
-      
-if (file.parents && file.parents.length > 0) {
-  projectType = await findProjectTypeInHierarchy(file.parents[0]);
-}
 
       // Check if already processed
       const existing = await notion.databases.query({
@@ -103,7 +101,7 @@ if (file.parents && file.parents.length > 0) {
         continue;
       }
 
-      console.log(`Processing: ${file.name}`);
+      console.log(`Processing: ${file.name} as ${projectType}`);
 
       // Simple filename-based analysis
       let analysis = {
@@ -149,7 +147,7 @@ if (file.parents && file.parents.length > 0) {
     res.status(200).json({ success: true });
     
   } catch (error) {
-    console.error('Error:', error);
+    console.error('❌ Webhook error:', error);
     res.status(500).json({ error: error.message });
   }
 }
