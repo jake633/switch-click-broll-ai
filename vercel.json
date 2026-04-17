@@ -7,3 +7,11 @@
     }
   ]
 }
+
+{
+  "functions": {
+    "api/process-recent-files.js": {
+      "maxDuration": 600
+    }
+  }
+}
