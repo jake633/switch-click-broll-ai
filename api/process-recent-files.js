@@ -1,10 +1,10 @@
-const { google } = require('googleapis');
-const { Client } = require('@notionhq/client');
-const Anthropic = require('@anthropic-ai/sdk');
-const https = require('https');
-const fs = require('fs');
-const { exec } = require('child_process');
-const { promisify } = require('util');
+import { google } from 'googleapis';
+import { Client } from '@notionhq/client';
+import Anthropic from '@anthropic-ai/sdk';
+import https from 'https';
+import fs from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
