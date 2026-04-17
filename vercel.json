@@ -7,7 +7,7 @@
   ],
   "functions": {
     "api/process-recent-files.js": {
-      "maxDuration": 600
+      "maxDuration": 300
     }
   }
 }
