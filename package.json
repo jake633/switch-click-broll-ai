@@ -1,12 +1,12 @@
 {
   "name": "switch-click-broll-ai",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Switch and Click B-roll AI processor with visual analysis",
+  "main": "api/process-recent-files.js",
   "dependencies": {
-    "@google-cloud/pubsub": "^4.0.0",
-    "googleapis": "^126.0.0",
-    "@anthropic-ai/sdk": "^0.20.0",
-    "@notionhq/client": "^2.2.0",
-    "fluent-ffmpeg": "^2.1.0"
+    "googleapis": "^140.0.0",
+    "@notionhq/client": "^2.2.15",
+    "@anthropic-ai/sdk": "^0.24.3",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0"
   }
 }
