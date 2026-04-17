@@ -26,75 +26,63 @@ export default async function handler(req, res) {
     const notion = new Client({ auth: process.env.NOTION_TOKEN });
     const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
+    // 🚨 DEBUG MODE: Force fresh cache rebuild and unlimited depth scanning
     const cacheFile = '/tmp/folder-cache.json';
-    const cacheMaxAge = 4 * 60 * 60 * 1000; // 4 hours
     
-    let folderCache = null;
-    let useCache = false;
+    let folderCache = [];
+    
+    console.log('🚨 DEBUG MODE: Force rebuilding cache with UNLIMITED depth scanning...');
+    
+    async function getAllSubfolders(parentId, allFolders = [], depth = 0) {
+      if (depth >= 15) { // Safety limit increased to 15 levels
+        console.log(`Reached safety max depth ${depth}, stopping recursion`);
+        return allFolders;
+      }
 
-    // Try to load existing cache
-    if (fs.existsSync(cacheFile)) {
       try {
-        const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-        const cacheAge = Date.now() - cacheData.timestamp;
+        // Faster rate limiting for debug mode
+        await delay(100);
         
-        if (cacheAge < cacheMaxAge) {
-          folderCache = cacheData.folders;
-          useCache = true;
-          console.log(`Using cached folder data (${Math.round(cacheAge/1000/60)} minutes old)`);
+        const response = await drive.files.list({
+          q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
+          fields: 'files(id,name,parents)',
+          pageSize: 100 // Increased page size
+        });
+
+        console.log(`🚨 DEBUG: Found ${response.data.files.length} folders at depth ${depth}`);
+
+        for (const folder of response.data.files) {
+          allFolders.push({id: folder.id, name: folder.name, depth});
+          // Continue recursion for all levels
+          await getAllSubfolders(folder.id, allFolders, depth + 1);
         }
+
+        return allFolders;
       } catch (e) {
-        console.log('Cache read error:', e.message);
+        console.log('Error getting subfolders:', e.message);
+        return allFolders;
       }
     }
 
-    // Build new cache if needed with rate limiting
-    if (!useCache) {
-      console.log('Building new folder cache with rate limiting...');
+    const mainFolderId = '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H';
+    folderCache = await getAllSubfolders(mainFolderId);
+    
+    // Save to cache
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify({
+        timestamp: Date.now(),
+        folders: folderCache
+      }));
+      console.log(`🚨 DEBUG: Built cache with ${folderCache.length} folders (UNLIMITED DEPTH)`);
       
-      async function getAllSubfolders(parentId, allFolders = [], depth = 0) {
-        if (depth >= 3) { // Limit recursion depth
-          console.log(`Reached max depth ${depth}, stopping recursion`);
-          return allFolders;
-        }
-
-        try {
-          // Add delay between API calls to avoid rate limiting
-          await delay(150);
-          
-          const response = await drive.files.list({
-            q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
-            fields: 'files(id,name,parents)',
-            pageSize: 20 // Reduced from 100
-          });
-
-          for (const folder of response.data.files) {
-            allFolders.push({id: folder.id, name: folder.name, depth});
-            if (depth < 3) {
-              await getAllSubfolders(folder.id, allFolders, depth + 1);
-            }
-          }
-
-          return allFolders;
-        } catch (e) {
-          console.log('Error getting subfolders:', e.message);
-          return allFolders;
-        }
-      }
-
-      const mainFolderId = '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H';
-      folderCache = await getAllSubfolders(mainFolderId);
-      
-      // Save to cache
-      try {
-        fs.writeFileSync(cacheFile, JSON.stringify({
-          timestamp: Date.now(),
-          folders: folderCache
-        }));
-        console.log(`Cached ${folderCache.length} folders`);
-      } catch (e) {
-        console.log('Cache write error:', e.message);
-      }
+      // Show folder distribution by depth
+      const depthCounts = folderCache.reduce((acc, f) => {
+        acc[f.depth] = (acc[f.depth] || 0) + 1;
+        return acc;
+      }, {});
+      console.log('🚨 DEBUG: Folder distribution by depth:', depthCounts);
+    } catch (e) {
+      console.log('Cache write error:', e.message);
     }
 
     // Helper function to download file
@@ -191,27 +179,34 @@ export default async function handler(req, res) {
     }
 
     // Search for recent files with 2-hour window
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    console.log('Searching for files newer than:', twoHoursAgo);
+    // 🚨 DEBUG MODE: Extended 4-hour time window
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    console.log('🚨 DEBUG: Searching for files newer than:', fourHoursAgo, '(4 HOUR WINDOW)');
 
-    // Limit folders to search to avoid overwhelming APIs
+    // 🚨 DEBUG MODE: Search ALL folders with ROOT PRIORITIZED
+    const rootFolder = {id: '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H', name: 'ROOT_PRIORITY', depth: 0};
+    
     const foldersToSearch = [
-      {id: '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H', name: 'Root', depth: 0},
-      ...folderCache.slice(0, 30) // Only search first 30 cached folders
+      rootFolder, // ROOT FOLDER FIRST!
+      ...folderCache // ALL cached folders, no 30-folder limit
     ];
 
-    console.log(`Searching ${foldersToSearch.length} folders for recent files...`);
+    console.log(`🚨 DEBUG: Searching ${foldersToSearch.length} folders (ROOT PRIORITIZED + ALL CACHED)...`);
+    console.log(`🚨 DEBUG: Folders by depth:`, foldersToSearch.reduce((acc, f) => {
+      acc[f.depth] = (acc[f.depth] || 0) + 1;
+      return acc;
+    }, {}));
 
     let allRecentFiles = [];
 
     // Search files with rate limiting instead of parallel
     for (const folder of foldersToSearch) {
       try {
-        // Add delay between folder searches to avoid rate limiting
-        await delay(200);
+        // 🚨 DEBUG: Faster delays for comprehensive search
+        await delay(100);
         
         const response = await drive.files.list({
-          q: `'${folder.id}' in parents and mimeType contains 'video' and createdTime > '${thirtyMinutesAgo}'`,
+          q: `'${folder.id}' in parents and mimeType contains 'video' and createdTime > '${fourHoursAgo}'`,
           orderBy: 'createdTime desc',
           fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)',
           pageSize: 3 // Reduced from 5
@@ -241,9 +236,9 @@ export default async function handler(req, res) {
       return res.status(200).json({
         success: true,
         message: 'No recent video files found',
-        searchedSince: twoHoursAgo,
+        searchedSince: fourHoursAgo,
         foldersSearched: foldersToSearch.length,
-        cacheUsed: useCache
+        cacheUsed: false
       });
     }
 
@@ -436,7 +431,7 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
       found: uniqueFiles.length,
       processed,
       foldersSearched: foldersToSearch.length,
-      cacheUsed: useCache,
+      cacheUsed: false,
       message: `Successfully processed ${processed} new files with AI visual analysis (optimized search)`
     });
 
