@@ -1,16 +1,19 @@
-import { google } from 'googleapis';
-import { Client } from '@notionhq/client';
-import Anthropic from '@anthropic-ai/sdk';
-import https from 'https';
-import fs from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+const { google } = require('googleapis');
+const { Client } = require('@notionhq/client');
+const Anthropic = require('@anthropic-ai/sdk');
+const https = require('https');
+const fs = require('fs');
+const { exec } = require('child_process');
+const { promisify } = require('util');
 
 const execAsync = promisify(exec);
 
+// Helper function to add delays between API calls
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 export default async function handler(req, res) {
   try {
-    console.log('=== PROCESSING RECENT FILES WITH CACHED FOLDER SEARCH ===');
+    console.log('=== PROCESSING RECENT FILES WITH OPTIMIZED FOLDER SEARCH ===');
 
     // Set up APIs
     const auth = new google.auth.OAuth2(
@@ -44,21 +47,29 @@ export default async function handler(req, res) {
       }
     }
 
-    // Build new cache if needed
+    // Build new cache if needed with rate limiting
     if (!useCache) {
-      console.log('Building new folder cache...');
+      console.log('Building new folder cache with rate limiting...');
       
       async function getAllSubfolders(parentId, allFolders = [], depth = 0) {
+        if (depth >= 3) { // Limit recursion depth
+          console.log(`Reached max depth ${depth}, stopping recursion`);
+          return allFolders;
+        }
+
         try {
+          // Add delay between API calls to avoid rate limiting
+          await delay(150);
+          
           const response = await drive.files.list({
             q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
             fields: 'files(id,name,parents)',
-            pageSize: 100
+            pageSize: 20 // Reduced from 100
           });
 
           for (const folder of response.data.files) {
             allFolders.push({id: folder.id, name: folder.name, depth});
-            if (depth < 5) {
+            if (depth < 3) {
               await getAllSubfolders(folder.id, allFolders, depth + 1);
             }
           }
@@ -177,55 +188,58 @@ export default async function handler(req, res) {
       return 'Long-form';
     }
 
-    // Search for recent files using cached folder structure
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    console.log('Searching for files newer than:', twoHoursAgo);
+    // OPTIMIZED: Search for recent files with shorter time window
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    console.log('Searching for files newer than:', thirtyMinutesAgo);
 
+    // Limit folders to search to avoid overwhelming APIs
     const foldersToSearch = [
       {id: '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H', name: 'Root', depth: 0},
-      ...folderCache
+      ...folderCache.slice(0, 30) // Only search first 30 cached folders
     ];
 
-    console.log(`Searching ${foldersToSearch.length} cached folders for recent files...`);
+    console.log(`Searching ${foldersToSearch.length} folders for recent files...`);
 
     let allRecentFiles = [];
 
-    // Search files in parallel for speed
-    const searchPromises = foldersToSearch.map(async folder => {
+    // Search files with rate limiting instead of parallel
+    for (const folder of foldersToSearch) {
       try {
+        // Add delay between folder searches to avoid rate limiting
+        await delay(200);
+        
         const response = await drive.files.list({
-          q: `'${folder.id}' in parents and mimeType contains 'video' and createdTime > '${twoHoursAgo}'`,
+          q: `'${folder.id}' in parents and mimeType contains 'video' and createdTime > '${thirtyMinutesAgo}'`,
           orderBy: 'createdTime desc',
           fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)',
-          pageSize: 5
+          pageSize: 3 // Reduced from 5
         });
         
-        return response.data.files.map(file => ({
+        const filesWithFolder = response.data.files.map(file => ({
           ...file,
           folderName: folder.name,
           folderId: folder.id
         }));
+        
+        allRecentFiles.push(...filesWithFolder);
       } catch (e) {
         console.log(`Error searching folder ${folder.name}:`, e.message);
-        return [];
+        continue; // Skip failed folders instead of stopping
       }
-    });
-
-    const searchResults = await Promise.all(searchPromises);
-    allRecentFiles = searchResults.flat();
+    }
 
     // Remove duplicates and sort by creation time
     const uniqueFiles = allRecentFiles.filter((file, index, self) => 
       index === self.findIndex(f => f.id === file.id)
     ).sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
 
-    console.log(`Found ${uniqueFiles.length} recent video files across all cached folders`);
+    console.log(`Found ${uniqueFiles.length} recent video files`);
 
     if (uniqueFiles.length === 0) {
       return res.status(200).json({
         success: true,
         message: 'No recent video files found',
-        searchedSince: twoHoursAgo,
+        searchedSince: thirtyMinutesAgo,
         foldersSearched: foldersToSearch.length,
         cacheUsed: useCache
       });
@@ -233,12 +247,13 @@ export default async function handler(req, res) {
 
     let processed = 0;
 
-    // Process up to 2 most recent files per run
-    for (const file of uniqueFiles.slice(0, 2)) {
+    // OPTIMIZED: Process up to 1 file per run to avoid timeouts
+    for (const file of uniqueFiles.slice(0, 1)) {
       console.log(`Checking: ${file.name} in ${file.folderName}`);
       
+      // UPDATED: 3GB file size limit as requested
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
-      if (fileSizeGB > 1) {
+      if (fileSizeGB > 3) {
         console.log(`Skipping large file: ${file.name} (${fileSizeGB.toFixed(2)}GB)`);
         continue;
       }
@@ -420,7 +435,7 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
       processed,
       foldersSearched: foldersToSearch.length,
       cacheUsed: useCache,
-      message: `Successfully processed ${processed} new files with AI visual analysis (cached folder search)`
+      message: `Successfully processed ${processed} new files with AI visual analysis (optimized search)`
     });
 
   } catch (error) {
