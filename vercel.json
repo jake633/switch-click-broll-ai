@@ -1,12 +1,10 @@
 {
-  
   "crons": [
     {
       "path": "/api/process-recent-files",
       "schedule": "* * * * *"
     }
-  ]
-
+  ],
   "functions": {
     "api/process-recent-files.js": {
       "maxDuration": 600
