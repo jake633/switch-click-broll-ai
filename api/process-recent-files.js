@@ -10,7 +10,7 @@ const execAsync = promisify(exec);
 
 export default async function handler(req, res) {
   try {
-    console.log('=== PROCESSING RECENT FILES WITH VISUAL AI ANALYSIS (RECURSIVE) ===');
+    console.log('=== PROCESSING RECENT FILES WITH CACHED FOLDER SEARCH ===');
 
     // Set up APIs
     const auth = new google.auth.OAuth2(
@@ -21,6 +21,69 @@ export default async function handler(req, res) {
     const drive = google.drive({ version: 'v3', auth });
     const notion = new Client({ auth: process.env.NOTION_TOKEN });
     const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
+
+    const cacheFile = '/tmp/folder-cache.json';
+    const cacheMaxAge = 4 * 60 * 60 * 1000; // 4 hours
+    
+    let folderCache = null;
+    let useCache = false;
+
+    // Try to load existing cache
+    if (fs.existsSync(cacheFile)) {
+      try {
+        const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        const cacheAge = Date.now() - cacheData.timestamp;
+        
+        if (cacheAge < cacheMaxAge) {
+          folderCache = cacheData.folders;
+          useCache = true;
+          console.log(`Using cached folder data (${Math.round(cacheAge/1000/60)} minutes old)`);
+        }
+      } catch (e) {
+        console.log('Cache read error:', e.message);
+      }
+    }
+
+    // Build new cache if needed
+    if (!useCache) {
+      console.log('Building new folder cache...');
+      
+      async function getAllSubfolders(parentId, allFolders = [], depth = 0) {
+        try {
+          const response = await drive.files.list({
+            q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
+            fields: 'files(id,name,parents)',
+            pageSize: 100
+          });
+
+          for (const folder of response.data.files) {
+            allFolders.push({id: folder.id, name: folder.name, depth});
+            if (depth < 5) {
+              await getAllSubfolders(folder.id, allFolders, depth + 1);
+            }
+          }
+
+          return allFolders;
+        } catch (e) {
+          console.log('Error getting subfolders:', e.message);
+          return allFolders;
+        }
+      }
+
+      const mainFolderId = '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H';
+      folderCache = await getAllSubfolders(mainFolderId);
+      
+      // Save to cache
+      try {
+        fs.writeFileSync(cacheFile, JSON.stringify({
+          timestamp: Date.now(),
+          folders: folderCache
+        }));
+        console.log(`Cached ${folderCache.length} folders`);
+      } catch (e) {
+        console.log('Cache write error:', e.message);
+      }
+    }
 
     // Helper function to download file
     async function downloadFile(fileId, fileName) {
@@ -43,7 +106,6 @@ export default async function handler(req, res) {
     async function extractFrames(videoPath, outputDir) {
       await execAsync(`mkdir -p ${outputDir}`);
       
-      // Extract 3 frames: beginning (3s), middle, and 2/3 through
       const commands = [
         `ffmpeg -i "${videoPath}" -ss 3 -vframes 1 "${outputDir}/frame1.jpg" -y`,
         `ffmpeg -i "${videoPath}" -ss 50% -vframes 1 "${outputDir}/frame2.jpg" -y`,
@@ -58,7 +120,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // Return existing frames
       const framePaths = [
         `${outputDir}/frame1.jpg`,
         `${outputDir}/frame2.jpg`, 
@@ -72,28 +133,6 @@ export default async function handler(req, res) {
     function imageToBase64(imagePath) {
       const imageBuffer = fs.readFileSync(imagePath);
       return imageBuffer.toString('base64');
-    }
-
-    // Recursive function to get all folders under main folder
-    async function getAllSubfolders(parentId, allFolders = []) {
-      try {
-        const response = await drive.files.list({
-          q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
-          fields: 'files(id,name,parents)',
-          pageSize: 100
-        });
-
-        for (const folder of response.data.files) {
-          allFolders.push(folder.id);
-          // Recursively get subfolders
-          await getAllSubfolders(folder.id, allFolders);
-        }
-
-        return allFolders;
-      } catch (e) {
-        console.log('Error getting subfolders:', e.message);
-        return allFolders;
-      }
     }
 
     // Function to build full folder path
@@ -135,58 +174,68 @@ export default async function handler(req, res) {
     function getVideoFormat(folderPath) {
       const pathLower = folderPath.toLowerCase();
       if (pathLower.includes('shorts')) return 'Shorts';
-      return 'Long-form'; // Default to long-form
+      return 'Long-form';
     }
 
-    // Get all subfolders first
-    console.log('Getting all subfolders...');
-    const mainFolderId = '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H';
-    const allFolderIds = [mainFolderId, ...(await getAllSubfolders(mainFolderId))];
-    console.log(`Found ${allFolderIds.length} total folders to search`);
-
-    // Search for recent files in ALL folders
+    // Search for recent files using cached folder structure
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     console.log('Searching for files newer than:', twoHoursAgo);
 
+    const foldersToSearch = [
+      {id: '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H', name: 'Root', depth: 0},
+      ...folderCache
+    ];
+
+    console.log(`Searching ${foldersToSearch.length} cached folders for recent files...`);
+
     let allRecentFiles = [];
 
-    // Search each folder for recent video files
-    for (const folderId of allFolderIds) {
+    // Search files in parallel for speed
+    const searchPromises = foldersToSearch.map(async folder => {
       try {
         const response = await drive.files.list({
-          q: `'${folderId}' in parents and mimeType contains 'video' and createdTime > '${twoHoursAgo}'`,
+          q: `'${folder.id}' in parents and mimeType contains 'video' and createdTime > '${twoHoursAgo}'`,
           orderBy: 'createdTime desc',
-          pageSize: 10,
-          fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
+          fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)',
+          pageSize: 5
         });
-
-        allRecentFiles.push(...response.data.files);
+        
+        return response.data.files.map(file => ({
+          ...file,
+          folderName: folder.name,
+          folderId: folder.id
+        }));
       } catch (e) {
-        console.log(`Error searching folder ${folderId}:`, e.message);
+        console.log(`Error searching folder ${folder.name}:`, e.message);
+        return [];
       }
-    }
+    });
+
+    const searchResults = await Promise.all(searchPromises);
+    allRecentFiles = searchResults.flat();
 
     // Remove duplicates and sort by creation time
     const uniqueFiles = allRecentFiles.filter((file, index, self) => 
       index === self.findIndex(f => f.id === file.id)
     ).sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
 
-    console.log(`Found ${uniqueFiles.length} recent video files across all folders`);
+    console.log(`Found ${uniqueFiles.length} recent video files across all cached folders`);
 
     if (uniqueFiles.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'No recent video files found in any subfolder',
+        message: 'No recent video files found',
         searchedSince: twoHoursAgo,
-        foldersSearched: allFolderIds.length
+        foldersSearched: foldersToSearch.length,
+        cacheUsed: useCache
       });
     }
 
     let processed = 0;
 
-    // Process up to 3 most recent files
-    for (const file of uniqueFiles.slice(0, 3)) {
-      console.log(`Checking: ${file.name}`);
+    // Process up to 2 most recent files per run
+    for (const file of uniqueFiles.slice(0, 2)) {
+      console.log(`Checking: ${file.name} in ${file.folderName}`);
       
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
       if (fileSizeGB > 1) {
@@ -240,14 +289,14 @@ export default async function handler(req, res) {
         const projectType = getProjectTypeFromPath(folderPath);
         const videoFormat = getVideoFormat(folderPath);
 
-        // AI visual analysis with comprehensive team/space training context
+        // AI visual analysis
         console.log('Analyzing frames with Claude Vision...');
         
         const prompt = `Analyze these frames from a Switch and Click YouTube tech channel B-roll video.
 
 TEAM MEMBER IDENTIFICATION:
 - Jake: CEO, male, main host, typically appears in tech review scenarios, often at desk setups
-- Betty: Head of Content, female, Jake's wife, often handles unboxing content, product demonstrations
+- Betty: Head of Content, female, Jake's wife, often handles unboxing content, product demonstrations  
 - Tyson: Senior Writer, male, content creation focused
 - Zack: Videographer, male, usually behind camera but may appear in setup/behind-scenes shots
 
@@ -268,7 +317,7 @@ Return JSON only:
 {
   "people": ["Jake", "Betty", "Tyson", "Zack", "Hands-only", "Unknown"],
   "objects": ["specific tech products visible - be detailed"],
-  "shot_type": "Close-up|Medium|Wide|Hands|Screen|Product",
+  "shot_type": "Close-up|Medium|Wide|Hands|Screen|Product", 
   "action": ["specific actions you observe"],
   "location": "A-roll-room|B-roll-room|Office-space|Outdoors|Misc",
   "description": "Detailed description of what you actually see in the video frames",
@@ -313,7 +362,6 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
           }
         } catch (e) {
           console.error('Failed to parse AI response:', e.message);
-          // Skip this file if AI analysis fails completely
           continue;
         }
 
@@ -330,7 +378,7 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
           `${file.name} (${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })})` : 
           file.name;
 
-        // Create Notion entry with visual analysis + folder path context in description
+        // Create Notion entry
         await notion.pages.create({
           parent: { database_id: process.env.NOTION_DATABASE_ID },
           properties: {
@@ -362,7 +410,6 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
 
       } catch (videoError) {
         console.error(`Error processing video ${file.name}:`, videoError.message);
-        // Skip if video processing fails
         continue;
       }
     }
@@ -371,8 +418,9 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
       success: true,
       found: uniqueFiles.length,
       processed,
-      foldersSearched: allFolderIds.length,
-      message: `Successfully processed ${processed} new files from ${allFolderIds.length} folders with AI visual analysis`
+      foldersSearched: foldersToSearch.length,
+      cacheUsed: useCache,
+      message: `Successfully processed ${processed} new files with AI visual analysis (cached folder search)`
     });
 
   } catch (error) {
