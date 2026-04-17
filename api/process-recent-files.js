@@ -5,6 +5,7 @@ import https from 'https';
 import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import ffmpeg from '@ffmpeg-installer/ffmpeg';
 
 const execAsync = promisify(exec);
 
@@ -117,10 +118,11 @@ export default async function handler(req, res) {
     async function extractFrames(videoPath, outputDir) {
       await execAsync(`mkdir -p ${outputDir}`);
       
+      // Use the FFmpeg installer path for Vercel compatibility
       const commands = [
-        `ffmpeg -i "${videoPath}" -ss 3 -vframes 1 "${outputDir}/frame1.jpg" -y`,
-        `ffmpeg -i "${videoPath}" -ss 50% -vframes 1 "${outputDir}/frame2.jpg" -y`,
-        `ffmpeg -i "${videoPath}" -ss 75% -vframes 1 "${outputDir}/frame3.jpg" -y`
+        `${ffmpeg.path} -i "${videoPath}" -ss 3 -vframes 1 "${outputDir}/frame1.jpg" -y`,
+        `${ffmpeg.path} -i "${videoPath}" -ss 50% -vframes 1 "${outputDir}/frame2.jpg" -y`,
+        `${ffmpeg.path} -i "${videoPath}" -ss 75% -vframes 1 "${outputDir}/frame3.jpg" -y`
       ];
 
       for (const cmd of commands) {
@@ -188,9 +190,9 @@ export default async function handler(req, res) {
       return 'Long-form';
     }
 
-    // OPTIMIZED: Search for recent files with shorter time window
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    console.log('Searching for files newer than:', thirtyMinutesAgo);
+    // Search for recent files with 2-hour window
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    console.log('Searching for files newer than:', twoHoursAgo);
 
     // Limit folders to search to avoid overwhelming APIs
     const foldersToSearch = [
@@ -239,7 +241,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         success: true,
         message: 'No recent video files found',
-        searchedSince: thirtyMinutesAgo,
+        searchedSince: twoHoursAgo,
         foldersSearched: foldersToSearch.length,
         cacheUsed: useCache
       });
