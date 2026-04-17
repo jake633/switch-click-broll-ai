@@ -10,7 +10,7 @@ const execAsync = promisify(exec);
 
 export default async function handler(req, res) {
   try {
-    console.log('=== PROCESSING RECENT FILES WITH VISUAL AI ANALYSIS ===');
+    console.log('=== PROCESSING RECENT FILES WITH VISUAL AI ANALYSIS (RECURSIVE) ===');
 
     // Set up APIs
     const auth = new google.auth.OAuth2(
@@ -74,6 +74,28 @@ export default async function handler(req, res) {
       return imageBuffer.toString('base64');
     }
 
+    // Recursive function to get all folders under main folder
+    async function getAllSubfolders(parentId, allFolders = []) {
+      try {
+        const response = await drive.files.list({
+          q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder'`,
+          fields: 'files(id,name,parents)',
+          pageSize: 100
+        });
+
+        for (const folder of response.data.files) {
+          allFolders.push(folder.id);
+          // Recursively get subfolders
+          await getAllSubfolders(folder.id, allFolders);
+        }
+
+        return allFolders;
+      } catch (e) {
+        console.log('Error getting subfolders:', e.message);
+        return allFolders;
+      }
+    }
+
     // Function to build full folder path
     async function buildFolderPath(folderId, path = []) {
       if (!folderId || folderId === '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H') {
@@ -116,34 +138,58 @@ export default async function handler(req, res) {
       return 'Long-form'; // Default to long-form
     }
 
-    // Search for files from last 2 hours
+    // Get all subfolders first
+    console.log('Getting all subfolders...');
+    const mainFolderId = '1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H';
+    const allFolderIds = [mainFolderId, ...(await getAllSubfolders(mainFolderId))];
+    console.log(`Found ${allFolderIds.length} total folders to search`);
+
+    // Search for recent files in ALL folders
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     console.log('Searching for files newer than:', twoHoursAgo);
-    
-    const response = await drive.files.list({
-      q: `'1k5IHIoJnFKf1k3yv0bq6wkJfskKn6w_H' in parents and mimeType contains 'video' and createdTime > '${twoHoursAgo}'`,
-      orderBy: 'createdTime desc',
-      pageSize: 3, // Reduced for video processing
-      fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
-    });
 
-    console.log(`Found ${response.data.files.length} recent video files`);
+    let allRecentFiles = [];
 
-    if (response.data.files.length === 0) {
+    // Search each folder for recent video files
+    for (const folderId of allFolderIds) {
+      try {
+        const response = await drive.files.list({
+          q: `'${folderId}' in parents and mimeType contains 'video' and createdTime > '${twoHoursAgo}'`,
+          orderBy: 'createdTime desc',
+          pageSize: 10,
+          fields: 'files(id,name,size,mimeType,webViewLink,parents,createdTime)'
+        });
+
+        allRecentFiles.push(...response.data.files);
+      } catch (e) {
+        console.log(`Error searching folder ${folderId}:`, e.message);
+      }
+    }
+
+    // Remove duplicates and sort by creation time
+    const uniqueFiles = allRecentFiles.filter((file, index, self) => 
+      index === self.findIndex(f => f.id === file.id)
+    ).sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
+
+    console.log(`Found ${uniqueFiles.length} recent video files across all folders`);
+
+    if (uniqueFiles.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'No recent video files found',
-        searchedSince: twoHoursAgo
+        message: 'No recent video files found in any subfolder',
+        searchedSince: twoHoursAgo,
+        foldersSearched: allFolderIds.length
       });
     }
 
     let processed = 0;
 
-    for (const file of response.data.files) {
+    // Process up to 3 most recent files
+    for (const file of uniqueFiles.slice(0, 3)) {
       console.log(`Checking: ${file.name}`);
       
       const fileSizeGB = parseInt(file.size) / (1024 * 1024 * 1024);
-      if (fileSizeGB > 1) { // Reduced size limit for video processing
+      if (fileSizeGB > 1) {
         console.log(`Skipping large file: ${file.name} (${fileSizeGB.toFixed(2)}GB)`);
         continue;
       }
@@ -304,7 +350,7 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
           }
         });
 
-        console.log(`✅ Created with visual AI analysis: ${displayTitle}`);
+        console.log(`✅ Created with visual AI analysis: ${displayTitle} from ${folderPath}`);
         processed++;
 
         // Cleanup temp files
@@ -323,9 +369,10 @@ Base everything on visual analysis. Be specific about objects (e.g., "mechanical
 
     res.status(200).json({
       success: true,
-      found: response.data.files.length,
+      found: uniqueFiles.length,
       processed,
-      message: `Successfully processed ${processed} new files with AI visual analysis`
+      foldersSearched: allFolderIds.length,
+      message: `Successfully processed ${processed} new files from ${allFolderIds.length} folders with AI visual analysis`
     });
 
   } catch (error) {
